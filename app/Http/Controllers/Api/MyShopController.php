@@ -639,6 +639,7 @@ class MyShopController extends Controller
                     'geo_stations.name as station_name',
                     'geo_stations.name_kana',
                     'geo_station_lines.name as line_name',
+                    'geo_station_groups.id as station_group_id',
                     'geo_station_groups.name as station_group_name'
                 )
                 ->orderBy('shop_stations.is_nearest', 'desc')
@@ -661,6 +662,14 @@ class MyShopController extends Controller
                     'walking_minutes' => $station->walking_minutes,
                     'is_nearest' => (bool)$station->is_nearest
                 ];
+
+                // station_group情報を追加
+                if ($station->station_group_id) {
+                    $stationData['station_group'] = [
+                        'id' => $station->station_group_id,
+                        'name' => $station->station_group_name,
+                    ];
+                }
 
                 if ($station->is_nearest) {
                     $result['main_station'] = $stationData;
