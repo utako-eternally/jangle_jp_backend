@@ -1318,9 +1318,15 @@ class MyShopController extends Controller
                 $mainStationId
             );
 
+            // station_idからstation_group_idを取得
+            $stationData = DB::table('geo_stations')
+                ->where('id', $mainStationId)
+                ->first(['station_group_id']);
+
             $stationsToInsert[] = [
                 'shop_id' => $shop->id,
                 'station_id' => $mainStationId,
+                'station_group_id' => $stationData->station_group_id ?? null,
                 'is_nearest' => true,
                 'distance_km' => $distance,
                 'walking_minutes' => round($distance * 15),
@@ -1337,9 +1343,15 @@ class MyShopController extends Controller
                     $stationId
                 );
 
+                // station_idからstation_group_idを取得
+                $stationData = DB::table('geo_stations')
+                    ->where('id', $stationId)
+                    ->first(['station_group_id']);
+
                 $stationsToInsert[] = [
                     'shop_id' => $shop->id,
                     'station_id' => $stationId,
+                    'station_group_id' => $stationData->station_group_id ?? null,
                     'is_nearest' => false,
                     'distance_km' => $distance,
                     'walking_minutes' => round($distance * 15),
@@ -1385,9 +1397,15 @@ class MyShopController extends Controller
                 $mainStationId
             );
 
+            // station_idからstation_group_idを取得
+            $stationData = DB::table('geo_stations')
+                ->where('id', $mainStationId)
+                ->first(['station_group_id']);
+
             $stationsToInsert[] = [
                 'shop_id' => $shop->id,
                 'station_id' => $mainStationId,
+                'station_group_id' => $stationData->station_group_id ?? null,
                 'is_nearest' => true,
                 'distance_km' => $distance,
                 'walking_minutes' => round($distance * 15),
@@ -1409,9 +1427,15 @@ class MyShopController extends Controller
                     $stationId
                 );
 
+                // station_idからstation_group_idを取得
+                $stationData = DB::table('geo_stations')
+                    ->where('id', $stationId)
+                    ->first(['station_group_id']);
+
                 $stationsToInsert[] = [
                     'shop_id' => $shop->id,
                     'station_id' => $stationId,
+                    'station_group_id' => $stationData->station_group_id ?? null,
                     'is_nearest' => false,
                     'distance_km' => $distance,
                     'walking_minutes' => round($distance * 15),
