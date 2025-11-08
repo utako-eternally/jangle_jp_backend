@@ -297,6 +297,7 @@ class ShopController extends Controller
                         cos(radians(longitude) - radians(?)) + sin(radians(?)) * 
                         sin(radians(latitude))))";
 
+            // まず距離内の全駅を取得（limitを外す）
             $nearbyStations = DB::table('geo_stations')
                 ->select(
                     'geo_stations.id',
@@ -314,11 +315,10 @@ class ShopController extends Controller
                 ->leftJoin('geo_station_groups', 'geo_stations.station_group_id', '=', 'geo_station_groups.id')
                 ->having('distance', '<=', $maxDistance)
                 ->orderBy('distance')
-                ->limit($maxStations)
                 ->setBindings([$lat, $lng, $lat])
                 ->get();
 
-            // Group stations by station_group_id
+            // Group stations by station_group_id or individual station_id
             $groupedStations = [];
             $processedGroups = [];
 
@@ -332,6 +332,7 @@ class ShopController extends Controller
                             'station_group_name' => $station->station_group_name,
                             'name_kana' => $station->name_kana,
                             'distance' => round($station->distance, 2),
+                            'walking_time' => (int)ceil($station->distance * 1000 / 80), // 徒歩時間を計算
                             'coordinates' => [
                                 'lat' => (float)$station->latitude,
                                 'lng' => (float)$station->longitude,
@@ -346,6 +347,7 @@ class ShopController extends Controller
                         'line_name' => $station->line_name,
                     ];
                 } else {
+                    // グループ化されていない駅
                     $groupedStations[] = [
                         'station_group_id' => null,
                         'station_group_name' => null,
@@ -353,6 +355,7 @@ class ShopController extends Controller
                         'station_name' => $station->name,
                         'name_kana' => $station->name_kana,
                         'distance' => round($station->distance, 2),
+                        'walking_time' => (int)ceil($station->distance * 1000 / 80), // 徒歩時間を計算
                         'coordinates' => [
                             'lat' => (float)$station->latitude,
                             'lng' => (float)$station->longitude,
@@ -368,17 +371,26 @@ class ShopController extends Controller
                 }
             }
 
-            $groupedStations = array_merge(array_values($processedGroups), $groupedStations);
+            // グループ化した駅とグループ化していない駅をマージ
+            $allStations = array_merge(array_values($processedGroups), $groupedStations);
+            
+            // 距離でソート
+            usort($allStations, function($a, $b) {
+                return $a['distance'] <=> $b['distance'];
+            });
+            
+            // ここでlimitを適用（グループ化後）
+            $limitedStations = array_slice($allStations, 0, $maxStations);
 
             Log::info('近隣駅検索完了', [
                 'lat' => $lat,
                 'lng' => $lng,
-                'found_stations' => count($groupedStations)
+                'found_stations' => count($limitedStations)
             ]);
 
             return $this->successResponse(
-                $groupedStations,
-                count($groupedStations) . '件の駅が見つかりました'
+                $limitedStations,
+                count($limitedStations) . '件の駅が見つかりました'
             );
 
         } catch (\Exception $e) {
