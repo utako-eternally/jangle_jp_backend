@@ -635,7 +635,7 @@ class MyShopController extends Controller
                 ->leftJoin('geo_station_groups', 'shop_stations.station_group_id', '=', 'geo_station_groups.id')
                 ->where('shop_stations.shop_id', $shopId)
                 ->select(
-                    'shop_stations.*',
+                    'shop_stations.*',  // ← これで is_nearest も取得される
                     'geo_stations.name as station_name',
                     'geo_stations.name_kana',
                     'geo_station_lines.name as line_name',
@@ -671,7 +671,7 @@ class MyShopController extends Controller
                     ];
                 }
 
-                if ($station->is_nearest) {
+                if ($station->is_nearest) {  // ← これで正しく判定される
                     $result['main_station'] = $stationData;
                 } else {
                     $result['sub_stations'][] = $stationData;
