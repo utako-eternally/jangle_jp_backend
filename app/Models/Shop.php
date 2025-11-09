@@ -26,6 +26,7 @@ class Shop extends Model
         'table_count',
         'score_table_count',
         'auto_table_count',
+        'postal_code',
         'prefecture_id',
         'city_id',
         'address_pref',
