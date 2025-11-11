@@ -33,42 +33,75 @@ class MyShopController extends Controller
     /**
      * 自分が所有する雀荘一覧を取得
      */
-    public function index(Request $request)
-    {
-        try {
-            $user = Auth::user();
-            
-            $query = $user->shops()->with(['prefecture', 'city', 'activePlan']);
-            
-            if ($request->filled('keyword')) {
-                $keyword = '%' . $request->keyword . '%';
-                $query->where(function ($q) use ($keyword) {
-                    $q->where('name', 'like', $keyword)
-                        ->orWhere('description', 'like', $keyword);
-                });
-            }
-
-            if ($request->filled('plan_type')) {
-                $planType = $request->input('plan_type');
-                $query->whereHas('activePlan', function ($q) use ($planType) {
-                    $q->where('plan_type', $planType)
-                    ->where('status', 'active');
-                });
-            }
-            
-            $shops = $query->orderBy('created_at', 'desc')
-                        ->paginate($request->input('per_page', 15));
-            
-            return $this->successResponse(
-                $shops,
-                '自分の雀荘一覧を取得しました'
-            );
-            
-        } catch (\Exception $e) {
-            Log::error('自分の雀荘一覧取得エラー: ' . $e->getMessage());
-            return $this->errorResponse('雀荘一覧の取得に失敗しました。', 500);
+public function index(Request $request)
+{
+    try {
+        $user = Auth::user();
+        
+        // リレーションを一括ロード
+        $query = $user->shops()->with([
+            'prefecture', 
+            'city', 
+            'activePlan',
+            'frees',  // ← 追加
+            'set',    // ← 追加
+            'shopStations.station.stationLine',
+            'shopStations.stationGroup'
+        ]);
+        
+        if ($request->filled('keyword')) {
+            $keyword = '%' . $request->keyword . '%';
+            $query->where(function ($q) use ($keyword) {
+                $q->where('name', 'like', $keyword)
+                    ->orWhere('description', 'like', $keyword);
+            });
         }
+
+        if ($request->filled('plan_type')) {
+            $planType = $request->input('plan_type');
+            $query->whereHas('activePlan', function ($q) use ($planType) {
+                $q->where('plan_type', $planType)
+                ->where('status', 'active');
+            });
+        }
+        
+        $shops = $query->orderBy('created_at', 'desc')
+                    ->paginate($request->input('per_page', 15));
+        
+        // 各店舗に最寄り駅情報を追加
+        $shops->getCollection()->transform(function ($shop) {
+            $shopArray = $shop->toArray();
+            
+            // 最寄り駅情報を整形
+            $shopArray['nearest_station'] = null;
+            foreach ($shop->shopStations as $shopStation) {
+                if ($shopStation->is_nearest) {
+                    $shopArray['nearest_station'] = [
+                        'id' => $shopStation->station->id,
+                        'name' => $shopStation->stationGroup 
+                            ? $shopStation->stationGroup->name 
+                            : $shopStation->station->name,
+                        'line_name' => $shopStation->station->stationLine->name ?? null,
+                        'distance_km' => $shopStation->distance_km,
+                        'walking_minutes' => $shopStation->walking_minutes,
+                    ];
+                    break;
+                }
+            }
+            
+            return $shopArray;
+        });
+        
+        return $this->successResponse(
+            $shops,
+            '自分の雀荘一覧を取得しました'
+        );
+        
+    } catch (\Exception $e) {
+        Log::error('自分の雀荘一覧取得エラー: ' . $e->getMessage());
+        return $this->errorResponse('雀荘一覧の取得に失敗しました。', 500);
     }
+}
 
     /**
      * 自分が所有する雀荘の詳細を取得
@@ -130,7 +163,8 @@ class MyShopController extends Controller
                     'day_of_week' => $hour->day_of_week,
                     'day_name' => $hour->getDayName(),
                     'is_closed' => $hour->is_closed,
-                    'is_24h' => $hour->is_24h,
+                    'is_open_flexible' => $hour->is_open_flexible,   // 追加
+                    'is_close_flexible' => $hour->is_close_flexible, // 追加
                     'open_time' => $hour->open_time,
                     'close_time' => $hour->close_time,
                     'display_text' => $hour->getDisplayText(),
@@ -174,9 +208,10 @@ class MyShopController extends Controller
             'business_hours' => 'nullable|array',
             'business_hours.*.day_of_week' => 'required|integer|min:0|max:7',
             'business_hours.*.is_closed' => 'nullable|boolean',
-            'business_hours.*.is_24h' => 'nullable|boolean',
             'business_hours.*.open_time' => 'nullable|date_format:H:i',
             'business_hours.*.close_time' => 'nullable|date_format:H:i',
+            'business_hours.*.is_open_flexible' => 'nullable|boolean',
+            'business_hours.*.is_close_flexible' => 'nullable|boolean',
             
             'table_count' => 'nullable|integer|min:0|max:100',
             'score_table_count' => 'nullable|integer|min:0|max:100',
@@ -451,7 +486,8 @@ class MyShopController extends Controller
             'business_hours' => 'nullable|array',
             'business_hours.*.day_of_week' => 'required|integer|min:0|max:7',
             'business_hours.*.is_closed' => 'nullable|boolean',
-            'business_hours.*.is_24h' => 'nullable|boolean',
+            'business_hours.*.is_open_flexible' => 'nullable|boolean',
+            'business_hours.*.is_close_flexible' => 'nullable|boolean',
             'business_hours.*.open_time' => 'nullable|date_format:H:i',
             'business_hours.*.close_time' => 'nullable|date_format:H:i',
         ]);
@@ -1505,14 +1541,23 @@ class MyShopController extends Controller
                 'shop_id' => $shop->id,
                 'day_of_week' => $hourData['day_of_week'],
                 'is_closed' => $hourData['is_closed'] ?? false,
-                'is_24h' => $hourData['is_24h'] ?? false,
+                'is_open_flexible' => $hourData['is_open_flexible'] ?? false,
+                'is_close_flexible' => $hourData['is_close_flexible'] ?? false,
                 'open_time' => null,
                 'close_time' => null,
             ];
 
-            if (!$data['is_closed'] && !$data['is_24h']) {
-                $data['open_time'] = $hourData['open_time'] ?? null;
-                $data['close_time'] = $hourData['close_time'] ?? null;
+            // 定休日でない場合のみ営業時間を設定
+            if (!$data['is_closed']) {
+                // 開店時刻: is_open_flexibleがfalseの場合のみ設定
+                if (!$data['is_open_flexible'] && isset($hourData['open_time'])) {
+                    $data['open_time'] = $hourData['open_time'];
+                }
+                
+                // 閉店時刻: is_close_flexibleがfalseの場合のみ設定
+                if (!$data['is_close_flexible'] && isset($hourData['close_time'])) {
+                    $data['close_time'] = $hourData['close_time'];
+                }
             }
 
             ShopBusinessHour::create($data);

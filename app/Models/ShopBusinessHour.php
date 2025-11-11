@@ -13,14 +13,16 @@ class ShopBusinessHour extends Model
         'shop_id',
         'day_of_week',
         'is_closed',
-        'is_24h',
+        'is_open_flexible',
+        'is_close_flexible',
         'open_time',
         'close_time',
     ];
 
     protected $casts = [
         'is_closed' => 'boolean',
-        'is_24h' => 'boolean',
+        'is_open_flexible' => 'boolean',
+        'is_close_flexible' => 'boolean',
     ];
 
     // 曜日の定数
@@ -70,14 +72,15 @@ class ShopBusinessHour extends Model
             return '定休日';
         }
 
-        if ($this->is_24h) {
+        // 24時間営業の判定（00:00-24:00 または 00:00-00:00）
+        if ($this->open_time === '00:00:00' && 
+            ($this->close_time === '24:00:00' || $this->close_time === '00:00:00')) {
             return '24時間営業';
         }
 
-        if ($this->open_time && $this->close_time) {
-            return substr($this->open_time, 0, 5) . ' - ' . substr($this->close_time, 0, 5);
-        }
+        $openText = $this->is_open_flexible ? 'オープン' : substr($this->open_time, 0, 5);
+        $closeText = $this->is_close_flexible ? 'ラスト' : substr($this->close_time, 0, 5);
 
-        return '営業';
+        return $openText . ' - ' . $closeText;
     }
 }
