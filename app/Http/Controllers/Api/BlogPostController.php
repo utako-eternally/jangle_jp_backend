@@ -170,14 +170,15 @@ class BlogPostController extends Controller
         $validator = Validator::make($request->all(), [
             'shop_id' => 'required|exists:shops,id',
             'title' => 'required|string|max:255',
-            'content' => 'required|string',
+            'content' => 'nullable|string|required_if:status,PUBLISHED',
             'status' => 'nullable|in:DRAFT,PUBLISHED',
             'published_at' => 'nullable|date',
         ], [
             'shop_id.required' => '店舗IDは必須です。',
             'shop_id.exists' => '指定された店舗が存在しません。',
             'title.required' => 'タイトルは必須です。',
-            'content.required' => '本文は必須です。',
+            'content.required_if' => '公開する場合は本文が必須です。',
+            'content.string' => '本文は文字列である必要があります。',
         ]);
 
         if ($validator->fails()) {
@@ -209,7 +210,7 @@ class BlogPostController extends Controller
                     'shop_id' => $request->shop_id,
                     'user_id' => Auth::id(),
                     'title' => $request->title,
-                    'content' => $request->content,
+                    'content' => $request->input('content', ''),
                     'status' => $request->input('status', BlogPost::STATUS_DRAFT),
                 ];
 
