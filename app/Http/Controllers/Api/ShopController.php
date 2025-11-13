@@ -131,6 +131,19 @@ class ShopController extends Controller
             ])->findOrFail($id);
 
             $shopData = $shop->toArray();
+
+            $shopData['activePlan'] = $shop->activePlan ? [
+                'id' => $shop->activePlan->id,
+                'shop_id' => $shop->activePlan->shop_id,
+                'plan_type' => $shop->activePlan->plan_type,
+                'status' => $shop->activePlan->status,
+                'started_at' => $shop->activePlan->started_at,
+                'expires_at' => $shop->activePlan->expires_at,
+                'cancelled_at' => $shop->activePlan->cancelled_at,
+                'auto_renew' => $shop->activePlan->auto_renew,
+                'created_at' => $shop->activePlan->created_at,
+                'updated_at' => $shop->activePlan->updated_at,
+            ] : null;
             $shopData['prefecture_slug'] = $shop->prefecture->slug ?? null;
             $shopData['city_slug'] = $shop->city->slug ?? null;
             $shopData['nearest_station'] = null;
