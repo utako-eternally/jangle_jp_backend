@@ -34,6 +34,7 @@ class StationController extends Controller
             $stationGroup = DB::table('geo_station_groups')
                 ->where('slug', $stationSlug)
                 ->where('prefecture_id', $prefecture->id)
+                ->select('id', 'name', 'name_kana', 'slug', 'primary_city_id')  // ← primary_city_id を追加
                 ->first();
 
             if ($stationGroup) {
@@ -43,18 +44,16 @@ class StationController extends Controller
                     ->where('geo_stations.station_group_id', $stationGroup->id)
                     ->select(
                         'geo_stations.id as station_id',
-                        'geo_stations.city_id',
                         'geo_station_lines.id as line_id',
                         'geo_station_lines.name as line_name'
                     )
                     ->get();
 
-                // 代表駅の市区町村情報を取得
-                $representativeStation = $lines->first();
+                // primary_city_id を使用して市区町村情報を取得
                 $city = null;
-                if ($representativeStation && $representativeStation->city_id) {
+                if ($stationGroup->primary_city_id) {
                     $cityData = DB::table('geo_cities')
-                        ->where('id', $representativeStation->city_id)
+                        ->where('id', $stationGroup->primary_city_id)
                         ->select('id', 'name', 'slug')
                         ->first();
                     
@@ -251,18 +250,20 @@ class StationController extends Controller
                 return $this->errorResponse('駅の位置情報が取得できません。', 404);
             }
 
-            // 周辺駅を取得
-            $radius = $request->input('radius', 3); // デフォルト3km
-            $limit = $request->input('limit', 10);
+            // パラメータ取得
+            $maxDistanceKm = $request->input('max_distance_km', 10.0);
+            $limit = $request->input('limit', 20);
 
             // 距離計算のためのSQL(Haversine formula)
             $lat = $currentStationLatLng['lat'];
             $lng = $currentStationLatLng['lng'];
             
-            // グループ化されている駅は代表として取得
+            // グループ化されている駅は代表として取得（雀荘がある駅のみ）
             $nearbyStations = DB::table('geo_stations')
                 ->leftJoin('geo_station_groups', 'geo_stations.station_group_id', '=', 'geo_station_groups.id')
                 ->join('geo_station_lines', 'geo_stations.station_line_id', '=', 'geo_station_lines.id')
+                ->leftJoin('geo_cities as station_city', 'geo_stations.city_id', '=', 'station_city.id')
+                ->leftJoin('geo_cities as group_city', 'geo_station_groups.primary_city_id', '=', 'group_city.id')
                 ->whereNotNull('geo_stations.latitude')
                 ->whereNotNull('geo_stations.longitude')
                 ->where('geo_stations.prefecture_id', $prefecture->id)
@@ -274,19 +275,20 @@ class StationController extends Controller
                         sin(radians({$lat})) * 
                         sin(radians(geo_stations.latitude))
                     )) <= ?
-                ", [$radius])
+                ", [$maxDistanceKm])
                 ->where(function($query) use ($stationSlug) {
                     $query->where('geo_stations.slug', '!=', $stationSlug)
-                          ->where(function($q) use ($stationSlug) {
-                              $q->where('geo_station_groups.slug', '!=', $stationSlug)
+                        ->where(function($q) use ($stationSlug) {
+                            $q->where('geo_station_groups.slug', '!=', $stationSlug)
                                 ->orWhereNull('geo_station_groups.slug');
-                          });
+                        });
                 })
                 ->select(
                     DB::raw("COALESCE(geo_station_groups.id, geo_stations.id) as id"),
                     DB::raw("COALESCE(geo_station_groups.name, geo_stations.name) as name"),
                     DB::raw("COALESCE(geo_station_groups.name_kana, geo_stations.name_kana) as name_kana"),
                     DB::raw("COALESCE(geo_station_groups.slug, geo_stations.slug) as slug"),
+                    DB::raw("COALESCE(group_city.slug, station_city.slug) as city_slug"),
                     'geo_station_lines.name as line_name',
                     'geo_stations.latitude',
                     'geo_stations.longitude',
@@ -299,10 +301,10 @@ class StationController extends Controller
                             sin(radians(geo_stations.latitude))
                         )) as distance_km
                     "),
-                    'geo_stations.station_group_id'
+                    'geo_stations.station_group_id',
+                    'geo_stations.id as original_station_id'
                 )
                 ->orderBy('distance_km')
-                ->limit($limit)
                 ->get();
 
             // 重複を除外(グループ化されている駅は1つだけ表示)
@@ -313,10 +315,10 @@ class StationController extends Controller
                 }
                 $seenSlugs[] = $station->slug;
                 return true;
-            });
+            })->take($limit * 2); // 余分に取得してフィルタリング後に調整
 
-            // 各駅の店舗数を取得
-            $nearbyStationsData = $uniqueStations->map(function($station) use ($prefecture) {
+            // 各駅の店舗数を取得（雀荘がある駅のみフィルタリング）
+            $nearbyStationsWithShops = $uniqueStations->map(function($station) use ($prefecture) {
                 // グループ化されている駅の場合は、グループ内全駅の店舗数を取得
                 if ($station->station_group_id) {
                     $stationIds = DB::table('geo_stations')
@@ -324,7 +326,7 @@ class StationController extends Controller
                         ->pluck('id')
                         ->toArray();
                 } else {
-                    $stationIds = [$station->id];
+                    $stationIds = [$station->original_station_id];
                 }
 
                 $shopCount = DB::table('shop_stations')
@@ -339,17 +341,23 @@ class StationController extends Controller
                     'name' => $station->name,
                     'name_kana' => $station->name_kana,
                     'slug' => $station->slug,
+                    'city_slug' => $station->city_slug,
                     'line_name' => $station->line_name,
                     'prefecture_slug' => $prefecture->slug,
                     'distance_km' => round($station->distance_km, 1),
                     'shop_count' => $shopCount,
                 ];
-            })->values();
+            })
+            ->filter(function($station) {
+                return $station['shop_count'] > 0; // ✅ 雀荘がある駅のみ
+            })
+            ->take($limit) // フィルタリング後に指定件数まで
+            ->values();
 
             $response = [
                 'current_station' => $currentStation,
-                'nearby_stations' => $nearbyStationsData,
-                'total' => $nearbyStationsData->count(),
+                'nearby_stations' => $nearbyStationsWithShops,
+                'total' => $nearbyStationsWithShops->count(),
             ];
 
             return $this->successResponse(

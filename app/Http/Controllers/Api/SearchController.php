@@ -100,18 +100,20 @@ class SearchController extends Controller
                 'geo_station_groups.slug',
                 'geo_prefectures.name as prefecture_name',
                 'geo_prefectures.slug as prefecture_slug',
+                'geo_cities.slug as city_slug',  // ✅ 追加
                 DB::raw('COUNT(DISTINCT shop_stations.shop_id) as shop_count')
             )
             ->join('geo_prefectures', 'geo_station_groups.prefecture_id', '=', 'geo_prefectures.id')
+            ->leftJoin('geo_cities', 'geo_station_groups.primary_city_id', '=', 'geo_cities.id')  // ✅ 追加
             ->join('geo_stations', 'geo_stations.station_group_id', '=', 'geo_station_groups.id')
             ->leftJoin('shop_stations', 'shop_stations.station_id', '=', 'geo_stations.id')
             ->leftJoin('shops', function($join) {
                 $join->on('shops.id', '=', 'shop_stations.shop_id')
-                     ->where('shops.is_verified', true);
+                    ->where('shops.is_verified', true);
             })
             ->where(function($q) use ($keyword) {
                 $q->where('geo_station_groups.name', 'like', "%{$keyword}%")
-                  ->orWhere('geo_station_groups.name_kana', 'like', "%{$keyword}%");
+                ->orWhere('geo_station_groups.name_kana', 'like', "%{$keyword}%");
             });
 
         if ($prefectureId) {
@@ -125,7 +127,8 @@ class SearchController extends Controller
                 'geo_station_groups.name_kana',
                 'geo_station_groups.slug',
                 'geo_prefectures.name',
-                'geo_prefectures.slug'
+                'geo_prefectures.slug',
+                'geo_cities.slug'  // ✅ 追加
             )
             ->havingRaw('COUNT(DISTINCT shop_stations.shop_id) > 0')
             ->orderByDesc('shop_count')
@@ -141,6 +144,7 @@ class SearchController extends Controller
                 'slug' => $item->slug,
                 'prefecture_name' => $item->prefecture_name,
                 'prefecture_slug' => $item->prefecture_slug,
+                'city_slug' => $item->city_slug,  // ✅ 追加
                 'shop_count' => (int) $item->shop_count,
                 'display_name' => $item->name . '駅 (' . $item->prefecture_name . ')',
             ];
@@ -166,19 +170,21 @@ class SearchController extends Controller
                 'geo_station_lines.name as line_name',
                 'geo_prefectures.name as prefecture_name',
                 'geo_prefectures.slug as prefecture_slug',
+                'geo_cities.slug as city_slug',  // ✅ 追加
                 DB::raw('COUNT(DISTINCT shop_stations.shop_id) as shop_count')
             )
             ->join('geo_station_lines', 'geo_stations.station_line_id', '=', 'geo_station_lines.id')
             ->join('geo_prefectures', 'geo_stations.prefecture_id', '=', 'geo_prefectures.id')
+            ->leftJoin('geo_cities', 'geo_stations.city_id', '=', 'geo_cities.id')  // ✅ 追加
             ->leftJoin('shop_stations', 'shop_stations.station_id', '=', 'geo_stations.id')
             ->leftJoin('shops', function($join) {
                 $join->on('shops.id', '=', 'shop_stations.shop_id')
-                     ->where('shops.is_verified', true);
+                    ->where('shops.is_verified', true);
             })
             ->whereNull('geo_stations.station_group_id')
             ->where(function($q) use ($keyword) {
                 $q->where('geo_stations.name', 'like', "%{$keyword}%")
-                  ->orWhere('geo_stations.name_kana', 'like', "%{$keyword}%");
+                ->orWhere('geo_stations.name_kana', 'like', "%{$keyword}%");
             });
 
         if ($prefectureId) {
@@ -193,7 +199,8 @@ class SearchController extends Controller
                 'geo_stations.slug',
                 'geo_station_lines.name',
                 'geo_prefectures.name',
-                'geo_prefectures.slug'
+                'geo_prefectures.slug',
+                'geo_cities.slug'  // ✅ 追加
             )
             ->havingRaw('COUNT(DISTINCT shop_stations.shop_id) > 0')
             ->orderByDesc('shop_count')
@@ -210,12 +217,12 @@ class SearchController extends Controller
                 'line_name' => $item->line_name,
                 'prefecture_name' => $item->prefecture_name,
                 'prefecture_slug' => $item->prefecture_slug,
+                'city_slug' => $item->city_slug,  // ✅ 追加
                 'shop_count' => (int) $item->shop_count,
                 'display_name' => $item->name . '駅 (' . $item->line_name . ' / ' . $item->prefecture_name . ')',
             ];
         })->toArray();
     }
-
     /**
      * 市区町村を検索
      * 

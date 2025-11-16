@@ -150,6 +150,29 @@ class PrefectureController extends Controller
                 $query->whereIn('shops.city_id', $cityIds);
             }
 
+            if ($request->filled('stations')) {
+                $stationIds = is_array($request->input('stations')) 
+                    ? $request->input('stations') 
+                    : explode(',', $request->input('stations'));
+                
+                $query->whereExists(function ($subQuery) use ($stationIds) {
+                    $subQuery->select(DB::raw(1))
+                        ->from('shop_stations')
+                        ->whereColumn('shop_stations.shop_id', 'shops.id')
+                        ->where(function($q) use ($stationIds) {
+                            // 駅グループIDまたは駅IDで検索
+                            $q->whereIn('shop_stations.station_id', function($stationQuery) use ($stationIds) {
+                                $stationQuery->select('id')
+                                    ->from('geo_stations')
+                                    ->where(function($sq) use ($stationIds) {
+                                        $sq->whereIn('id', $stationIds)
+                                        ->orWhereIn('station_group_id', $stationIds);
+                                    });
+                            });
+                        });
+                });
+            }
+
             // 営業形態フィルター（OR検索）
             $hasBusinessTypeFilter = $request->boolean('has_three_player_free') || 
                                     $request->boolean('has_four_player_free') || 
@@ -328,20 +351,22 @@ class PrefectureController extends Controller
                     'geo_station_groups.name',
                     'geo_station_groups.name_kana',
                     'geo_station_groups.slug',
+                    'geo_station_groups.primary_city_id',  // ← 追加
                     DB::raw('COUNT(DISTINCT shop_stations.shop_id) as shop_count')
                 )
                 ->join('geo_stations', 'geo_stations.station_group_id', '=', 'geo_station_groups.id')
                 ->leftJoin('shop_stations', 'shop_stations.station_id', '=', 'geo_stations.id')
                 ->leftJoin('shops', function($join) {
                     $join->on('shops.id', '=', 'shop_stations.shop_id')
-                         ->where('shops.is_verified', true);
+                        ->where('shops.is_verified', true);
                 })
                 ->where('geo_station_groups.prefecture_id', $prefecture->id)
                 ->groupBy(
                     'geo_station_groups.id',
                     'geo_station_groups.name',
                     'geo_station_groups.name_kana',
-                    'geo_station_groups.slug'
+                    'geo_station_groups.slug',
+                    'geo_station_groups.primary_city_id'  // ← 追加
                 )
                 ->havingRaw('COUNT(DISTINCT shop_stations.shop_id) > 0')
                 ->get();
@@ -354,6 +379,7 @@ class PrefectureController extends Controller
                     'geo_stations.name',
                     'geo_stations.name_kana',
                     'geo_stations.slug',
+                    'geo_stations.city_id',  // ← 追加
                     'geo_station_lines.name as line_name',
                     DB::raw('COUNT(DISTINCT shop_stations.shop_id) as shop_count')
                 )
@@ -361,7 +387,7 @@ class PrefectureController extends Controller
                 ->leftJoin('shop_stations', 'shop_stations.station_id', '=', 'geo_stations.id')
                 ->leftJoin('shops', function($join) {
                     $join->on('shops.id', '=', 'shop_stations.shop_id')
-                         ->where('shops.is_verified', true);
+                        ->where('shops.is_verified', true);
                 })
                 ->where('geo_stations.prefecture_id', $prefecture->id)
                 ->whereNull('geo_stations.station_group_id')
@@ -370,32 +396,76 @@ class PrefectureController extends Controller
                     'geo_stations.name',
                     'geo_stations.name_kana',
                     'geo_stations.slug',
+                    'geo_stations.city_id',  // ← 追加
                     'geo_station_lines.name'
                 )
                 ->havingRaw('COUNT(DISTINCT shop_stations.shop_id) > 0')
                 ->get();
 
             // グループ化された駅を整形
-            $formattedGroupedStations = $groupedStations->map(function($group) {
+            $formattedGroupedStations = $groupedStations->map(function($group) use ($prefecture) {
+                // primary_city_id から市区町村情報を取得
+                $city = null;
+                if ($group->primary_city_id) {
+                    $cityData = DB::table('geo_cities')
+                        ->where('id', $group->primary_city_id)
+                        ->select('slug')
+                        ->first();
+                    if ($cityData) {
+                        $city = $cityData->slug;
+                    }
+                }
+
+                // グループ内の路線情報を取得
+                $linesInGroup = DB::table('geo_stations')
+                    ->join('geo_station_lines', 'geo_stations.station_line_id', '=', 'geo_station_lines.id')
+                    ->where('geo_stations.station_group_id', $group->station_group_id)
+                    ->select(
+                        'geo_station_lines.id',
+                        'geo_station_lines.name',
+                        'geo_station_lines.name_kana'
+                    )
+                    ->distinct()
+                    ->get();
+
                 return [
-                    'type' => 'group',
-                    'station_group_id' => $group->station_group_id,
+                    'type' => 'station_group',  // ✅ 追加
+                    'station_group_id' => $group->station_group_id,  // ✅ SearchControllerと統一
+                    'id' => $group->station_group_id,
                     'name' => $group->name,
                     'name_kana' => $group->name_kana,
                     'slug' => $group->slug,
+                    'line_name' => $linesInGroup->pluck('name')->join(' / '),
+                    'prefecture_slug' => $prefecture->slug,
+                    'city_slug' => $city,
                     'shop_count' => (int)$group->shop_count,
                 ];
             });
 
             // 単独駅を整形
-            $formattedSingleStations = $singleStations->map(function($station) {
+            $formattedSingleStations = $singleStations->map(function($station) use ($prefecture) {
+                // city_id から市区町村スラッグを取得
+                $city = null;
+                if ($station->city_id) {
+                    $cityData = DB::table('geo_cities')
+                        ->where('id', $station->city_id)
+                        ->select('slug')
+                        ->first();
+                    if ($cityData) {
+                        $city = $cityData->slug;
+                    }
+                }
+
                 return [
-                    'type' => 'single',
-                    'station_id' => $station->station_id,
+                    'type' => 'station_single',  // ✅ 追加
+                    'station_id' => $station->station_id,  // ✅ SearchControllerと統一
+                    'id' => $station->station_id,
                     'name' => $station->name,
                     'name_kana' => $station->name_kana,
                     'slug' => $station->slug,
                     'line_name' => $station->line_name,
+                    'prefecture_slug' => $prefecture->slug,
+                    'city_slug' => $city,
                     'shop_count' => (int)$station->shop_count,
                 ];
             });
@@ -407,10 +477,16 @@ class PrefectureController extends Controller
                 ->take($limit)
                 ->values();
 
-            return $this->successResponse(
-                $allStations,
-                '都道府県内の駅一覧を取得しました'
-            );
+            return $this->successResponse([
+                'prefecture' => [
+                    'id' => $prefecture->id,
+                    'name' => $prefecture->name,
+                    'name_kana' => $prefecture->name_kana,
+                    'slug' => $prefecture->slug,
+                ],
+                'stations' => $allStations,
+                'total' => $allStations->count()
+            ], '都道府県内の駅一覧を取得しました');
 
         } catch (\Exception $e) {
             Log::error('都道府県内駅一覧取得エラー: ' . $e->getMessage(), [

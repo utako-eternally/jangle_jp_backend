@@ -18,6 +18,7 @@ class GeoStationGroup extends Model
         'name_kana',
         'slug',
         'prefecture_id',
+        'primary_city_id',
     ];
 
     /**
@@ -26,6 +27,14 @@ class GeoStationGroup extends Model
     public function prefecture(): BelongsTo
     {
         return $this->belongsTo(GeoPrefecture::class, 'prefecture_id');
+    }
+
+    /**
+     * このグループの代表市区町村を取得
+     */
+    public function primaryCity(): BelongsTo
+    {
+        return $this->belongsTo(GeoCity::class, 'primary_city_id');
     }
 
     /**

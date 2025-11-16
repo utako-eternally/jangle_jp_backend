@@ -129,6 +129,30 @@ class CityController extends Controller
 
             // === フィルタリング追加 ===
 
+            // ✅ 駅フィルター（追加）
+            if ($request->filled('stations')) {
+                $stationIds = is_array($request->input('stations')) 
+                    ? $request->input('stations') 
+                    : explode(',', $request->input('stations'));
+                
+                $query->whereExists(function ($subQuery) use ($stationIds) {
+                    $subQuery->select(DB::raw(1))
+                        ->from('shop_stations')
+                        ->whereColumn('shop_stations.shop_id', 'shops.id')
+                        ->where(function($q) use ($stationIds) {
+                            // 駅グループIDまたは駅IDで検索
+                            $q->whereIn('shop_stations.station_id', function($stationQuery) use ($stationIds) {
+                                $stationQuery->select('id')
+                                    ->from('geo_stations')
+                                    ->where(function($sq) use ($stationIds) {
+                                        $sq->whereIn('id', $stationIds)
+                                        ->orWhereIn('station_group_id', $stationIds);
+                                    });
+                            });
+                        });
+                });
+            }
+
             // 営業形態フィルター（OR検索）
             $hasBusinessTypeFilter = $request->boolean('has_three_player_free') || 
                                     $request->boolean('has_four_player_free') || 
@@ -307,96 +331,109 @@ class CityController extends Controller
                 return $this->errorResponse('指定された市区町村が見つかりません。', 404);
             }
 
-            // 市区町村内の駅を取得（路線情報と駅グループも含む）
-            // geo_station_linesテーブルのカラムを確認して適切なものだけ取得
-            $stations = GeoStation::where('city_id', $city->id)
-                ->with([
-                    'stationLine:id,name,name_kana',
-                    'stationGroup:id,name,name_kana'
-                ])
-                ->select([
-                    'id',
-                    'station_group_id',
-                    'station_line_id',
-                    'name',
-                    'name_kana',
-                    'slug',
-                    'latitude',
-                    'longitude',
-                    'line_order',
-                    'is_grouped'
-                ])
-                ->orderBy('station_line_id')
-                ->orderBy('line_order')
+            // 駅グループがある駅の集計（雀荘がある駅のみ）
+            $groupedStations = DB::table('geo_station_groups')
+                ->select(
+                    'geo_station_groups.id as station_group_id',
+                    'geo_station_groups.name',
+                    'geo_station_groups.name_kana',
+                    'geo_station_groups.slug',
+                    DB::raw('COUNT(DISTINCT shop_stations.shop_id) as shop_count')
+                )
+                ->join('geo_stations', 'geo_stations.station_group_id', '=', 'geo_station_groups.id')
+                ->leftJoin('shop_stations', 'shop_stations.station_id', '=', 'geo_stations.id')
+                ->leftJoin('shops', function($join) {
+                    $join->on('shops.id', '=', 'shop_stations.shop_id')
+                        ->where('shops.is_verified', true);
+                })
+                ->where('geo_stations.city_id', $city->id)
+                ->groupBy(
+                    'geo_station_groups.id',
+                    'geo_station_groups.name',
+                    'geo_station_groups.name_kana',
+                    'geo_station_groups.slug'
+                )
+                ->havingRaw('COUNT(DISTINCT shop_stations.shop_id) > 0')
                 ->get();
 
-            // 駅グループでグルーピング
-            $groupedStations = [];
-            $processedGroups = [];
+            // 駅グループがない単独駅の集計（雀荘がある駅のみ）
+            $singleStations = DB::table('geo_stations')
+                ->select(
+                    'geo_stations.id as station_id',
+                    'geo_stations.name',
+                    'geo_stations.name_kana',
+                    'geo_stations.slug',
+                    'geo_station_lines.name as line_name',
+                    DB::raw('COUNT(DISTINCT shop_stations.shop_id) as shop_count')
+                )
+                ->join('geo_station_lines', 'geo_stations.station_line_id', '=', 'geo_station_lines.id')
+                ->leftJoin('shop_stations', 'shop_stations.station_id', '=', 'geo_stations.id')
+                ->leftJoin('shops', function($join) {
+                    $join->on('shops.id', '=', 'shop_stations.shop_id')
+                        ->where('shops.is_verified', true);
+                })
+                ->where('geo_stations.city_id', $city->id)
+                ->whereNull('geo_stations.station_group_id')
+                ->groupBy(
+                    'geo_stations.id',
+                    'geo_stations.name',
+                    'geo_stations.name_kana',
+                    'geo_stations.slug',
+                    'geo_station_lines.name'
+                )
+                ->havingRaw('COUNT(DISTINCT shop_stations.shop_id) > 0')
+                ->get();
 
-            foreach ($stations as $station) {
-                // 駅グループがある場合
-                if ($station->stationGroup && $station->is_grouped) {
-                    $groupId = $station->stationGroup->id;
-                    
-                    // 既に処理済みのグループならスキップ
-                    if (in_array($groupId, $processedGroups)) {
-                        continue;
-                    }
-                    
-                    $processedGroups[] = $groupId;
-                    
-                    // グループに属する全路線を取得
-                    $linesInGroup = GeoStation::where('station_group_id', $groupId)
-                        ->where('city_id', $city->id)
-                        ->with('stationLine:id,name,name_kana')
-                        ->get()
-                        ->pluck('stationLine')
-                        ->filter()
-                        ->unique('id')
-                        ->values()
-                        ->map(function ($line) {
-                            return [
-                                'id' => $line->id,
-                                'name' => $line->name,
-                                'name_kana' => $line->name_kana,
-                            ];
-                        });
+                // グループ化された駅を整形
+                $formattedGroupedStations = $groupedStations->map(function($group) use ($prefecture, $city) {
+                    // グループ内の路線情報を取得
+                    $linesInGroup = DB::table('geo_stations')
+                        ->join('geo_station_lines', 'geo_stations.station_line_id', '=', 'geo_station_lines.id')
+                        ->where('geo_stations.station_group_id', $group->station_group_id)
+                        ->where('geo_stations.city_id', $city->id)
+                        ->select(
+                            'geo_station_lines.id',
+                            'geo_station_lines.name',
+                            'geo_station_lines.name_kana'
+                        )
+                        ->distinct()
+                        ->get();
 
-                    $groupedStations[] = [
-                        'id' => $station->id,
-                        'name' => $station->stationGroup->name,
-                        'name_kana' => $station->stationGroup->name_kana,
-                        'slug' => $station->slug, // 駅のslugを使用
-                        'latitude' => (float) $station->latitude,
-                        'longitude' => (float) $station->longitude,
-                        'is_grouped' => true,
-                        'station_group' => [
-                            'id' => $station->stationGroup->id,
-                            'name' => $station->stationGroup->name,
-                            'name_kana' => $station->stationGroup->name_kana,
-                        ],
-                        'lines' => $linesInGroup,
+                    return [
+                        'type' => 'station_group',  // ✅ 追加
+                        'station_group_id' => $group->station_group_id,  // ✅ 追加
+                        'id' => $group->station_group_id,
+                        'name' => $group->name,
+                        'name_kana' => $group->name_kana,
+                        'slug' => $group->slug,
+                        'line_name' => $linesInGroup->pluck('name')->join(' / '),
+                        'prefecture_slug' => $prefecture->slug,
+                        'city_slug' => $city->slug,
+                        'shop_count' => (int)$group->shop_count,
                     ];
-                } else {
-                    // 単独駅
-                    $groupedStations[] = [
-                        'id' => $station->id,
+                });
+
+                // 単独駅を整形
+                $formattedSingleStations = $singleStations->map(function($station) use ($prefecture, $city) {
+                    return [
+                        'type' => 'station_single',  // ✅ 追加
+                        'station_id' => $station->station_id,  // ✅ 追加
+                        'id' => $station->station_id,
                         'name' => $station->name,
                         'name_kana' => $station->name_kana,
                         'slug' => $station->slug,
-                        'latitude' => (float) $station->latitude,
-                        'longitude' => (float) $station->longitude,
-                        'is_grouped' => false,
-                        'station_group' => null,
-                        'lines' => $station->stationLine ? [[
-                            'id' => $station->stationLine->id,
-                            'name' => $station->stationLine->name,
-                            'name_kana' => $station->stationLine->name_kana,
-                        ]] : [],
+                        'line_name' => $station->line_name,
+                        'prefecture_slug' => $prefecture->slug,
+                        'city_slug' => $city->slug,
+                        'shop_count' => (int)$station->shop_count,
                     ];
-                }
-            }
+                });
+
+            // マージして店舗数順にソート
+            $allStations = $formattedGroupedStations
+                ->concat($formattedSingleStations)
+                ->sortByDesc('shop_count')
+                ->values();
 
             return $this->successResponse([
                 'city' => [
@@ -410,8 +447,8 @@ class CityController extends Controller
                         'slug' => $prefecture->slug,
                     ]
                 ],
-                'stations' => $groupedStations,
-                'total' => count($groupedStations)
+                'stations' => $allStations,
+                'total' => $allStations->count()
             ], '市区町村内の駅一覧を取得しました');
 
         } catch (\Exception $e) {
