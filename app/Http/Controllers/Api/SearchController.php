@@ -53,6 +53,9 @@ class SearchController extends Controller
                 }
             }
 
+            // 都道府県を検索
+            $prefectures = $this->searchPrefectures($keyword, $limit);
+
             // 駅グループを検索
             $stationGroups = $this->searchStationGroups($keyword, $prefectureId, $limit);
 
@@ -64,6 +67,7 @@ class SearchController extends Controller
 
             // 結果をマージ
             $results = [
+                'prefectures' => $prefectures,
                 'stations' => array_merge($stationGroups, $singleStations),
                 'cities' => $cities,
             ];
@@ -80,6 +84,55 @@ class SearchController extends Controller
             ]);
             return $this->errorResponse('検索に失敗しました。', 500);
         }
+    }
+
+    /**
+     * 都道府県を検索
+     * 
+     * @param string $keyword
+     * @param int $limit
+     * @return array
+     */
+    private function searchPrefectures($keyword, $limit)
+    {
+        $results = DB::table('geo_prefectures')
+            ->select(
+                'geo_prefectures.id as prefecture_id',
+                'geo_prefectures.name',
+                'geo_prefectures.name_kana',
+                'geo_prefectures.slug',
+                DB::raw('COUNT(shops.id) as shop_count')
+            )
+            ->leftJoin('shops', function($join) {
+                $join->on('shops.prefecture_id', '=', 'geo_prefectures.id')
+                    ->where('shops.is_verified', true);
+            })
+            ->where(function($q) use ($keyword) {
+                $q->where('geo_prefectures.name', 'like', "%{$keyword}%")
+                ->orWhere('geo_prefectures.name_kana', 'like', "%{$keyword}%");
+            })
+            ->groupBy(
+                'geo_prefectures.id',
+                'geo_prefectures.name',
+                'geo_prefectures.name_kana',
+                'geo_prefectures.slug'
+            )
+            ->havingRaw('COUNT(shops.id) > 0')
+            ->orderByDesc('shop_count')
+            ->limit($limit)
+            ->get();
+
+        return $results->map(function($item) {
+            return [
+                'type' => 'prefecture',
+                'prefecture_id' => $item->prefecture_id,
+                'name' => $item->name,
+                'name_kana' => $item->name_kana,
+                'slug' => $item->slug,
+                'shop_count' => (int) $item->shop_count,
+                'display_name' => $item->name,
+            ];
+        })->toArray();
     }
 
     /**
